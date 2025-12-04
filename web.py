@@ -1,3 +1,4 @@
+import os
 from flask import Flask
 from threading import Thread
 
@@ -10,6 +11,11 @@ def home():
 def run():
     app.run(host="0.0.0.0", port=8000)
 
-def keep_alive():
+if __name__ == "__main__":
+    # ১. ওয়েব সার্ভার ব্যাকগ্রাউন্ডে চালু করা হচ্ছে
     t = Thread(target=run)
     t.start()
+
+    # ২. এরপর আপনার মেইন বট বা start.sh রান করা হচ্ছে
+    # এটি main.py ফাইলে হাত না দিয়েই বট চালু করে দেবে
+    os.system("bash start.sh")
