@@ -1,8 +1,8 @@
-# Use a newer, supported python image (Bookworm is Debian 12)
-FROM python:3.9-slim-bookworm
+# Change from python:3.9-slim-buster to python:3.10-slim-bookworm
+FROM python:3.10-slim-bookworm
 
 # Install system dependencies
-# Using apt-get is recommended for Dockerfiles, and rm -rf /var/lib/apt/lists/* reduces image size
+# (Using bookworm repositories avoids the "exit code 100" apt error from older images)
 RUN apt-get update && apt-get install -y \
     git \
     curl \
