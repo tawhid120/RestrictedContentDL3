@@ -2,7 +2,6 @@
 FROM python:3.10-slim-bookworm
 
 # Install system dependencies
-# (Using bookworm repositories avoids the "exit code 100" apt error from older images)
 RUN apt-get update && apt-get install -y \
     git \
     curl \
@@ -17,6 +16,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# --- নতুন লাইন: ফ্লাস্ক (Flask) ইন্সটল করা হচ্ছে ---
+RUN pip install flask
+# ---------------------------------------------
+
 # Copy rest of the bot files
 COPY . .
 
@@ -26,5 +29,6 @@ RUN chmod +x start.sh
 # Expose port for Flask
 EXPOSE 8000
 
-# Run the bot and Flask server
-CMD ["bash", "start.sh"]
+# --- পরিবর্তিত লাইন: start.sh এর বদলে web.py রান করা হচ্ছে ---
+CMD ["python3", "web.py"]
+# --------------------------------------------------------
