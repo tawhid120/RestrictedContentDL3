@@ -8,3 +8,4 @@ telegraph
 python-dotenv
 speedtest-cli
 pymongo
+flask
