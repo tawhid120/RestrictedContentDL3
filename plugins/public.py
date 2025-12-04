@@ -17,19 +17,29 @@ def setup_public_handler(app: Client):
         user_id = message.from_user.id
         chat_id = message.chat.id
 
-        # Extract URL from command
-        if len(message.command) < 2:
-            await message.reply_text(
-                "**Please provide a valid URL! Usage: /dl {url}**",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            LOGGER.warning(f"No URL provided in /dl command by user {user_id}")
-            return
+        # লজিক ১: ইউজার কি কমান্ড (/dl) দিয়েছে নাকি সরাসরি লিংক দিয়েছে?
+        url = ""
+        
+        # যদি কমান্ড (/dl) ব্যবহার করা হয়
+        if getattr(message, "command", None):
+            if len(message.command) < 2:
+                await message.reply_text(
+                    "**Please provide a valid URL! Usage: /dl {url}**",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                LOGGER.warning(f"No URL provided in /dl command by user {user_id}")
+                return
+            url = message.command[1]
+        
+        # যদি সরাসরি লিংক (Text) দেওয়া হয়
+        else:
+            url = message.text.strip()
 
-        url = message.command[1]
         # Handle t.me and telegram.me URLs, including private links (t.me/c/)
         match = re.match(r"(?:https?://)?(?:t\.me|telegram\.me)/(?:c/)?([a-zA-Z0-9_]+)/(\d+)", url)
         if not match:
+            # যদি লিংক ভ্যালিড না হয় এবং ইউজার সরাসরি টেক্সট দিয়ে থাকে, তাহলে আমরা সাইলেন্ট থাকতে পারি বা এরর দিতে পারি।
+            # তবে ইউজার যেহেতু এক্সপেক্ট করছে লিংক দিলে কাজ হবে, তাই এরর দেওয়া ভালো।
             await message.reply_text(
                 "**Invalid URL! Please use a valid Telegram message link**",
                 parse_mode=ParseMode.MARKDOWN
@@ -279,10 +289,21 @@ def setup_public_handler(app: Client):
             )
             LOGGER.error(f"Failed to copy message {message_id} from {channel_username}: {e}")
 
+    # ১. পুরাতন কমান্ড হ্যান্ডলার (/dl)
     app.add_handler(
         MessageHandler(
             dl_command,
             filters=filters.command("dl", prefixes=COMMAND_PREFIX) & (filters.private | filters.group)
+        ),
+        group=1
+    )
+
+    # ২. নতুন লজিক: সরাসরি টেলিগ্রাম লিংক হ্যান্ডলার
+    # এটি যেকোনো t.me বা telegram.me লিংক ডিটেক্ট করবে
+    app.add_handler(
+        MessageHandler(
+            dl_command,
+            filters=filters.regex(r"(?:https?://)?(?:t\.me|telegram\.me)/") & (filters.private | filters.group)
         ),
         group=1
     )
