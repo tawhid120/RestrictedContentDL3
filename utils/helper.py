@@ -154,18 +154,20 @@ async def get_media_info(path):
 
 async def get_video_thumbnail(video_file, duration):
     output = os.path.join("Assets", "video_thumb.jpg")
-    if duration is None:
-        duration = (await get_media_info(video_file))[0]
-    if duration == 0:
-        duration = 3
-    duration = duration // 2
+    
+    # ---------------------------------------------------------
+    # আপনার রিকোয়ারমেন্ট অনুযায়ী পরিবর্তন এখানে করা হয়েছে
+    # আগে এটি ভিডিওর মাঝখান থেকে নিত, এখন 0.1 সেকেন্ড থেকে নিবে
+    # ---------------------------------------------------------
+    timestamp = 0.1 
+
     cmd = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
         "error",
         "-ss",
-        f"{duration}",
+        f"{timestamp}", # এখানে নির্দিষ্ট সময় বসানো হলো
         "-i",
         video_file,
         "-vf",
@@ -225,6 +227,7 @@ async def send_media(
             if thumb is None:  # Fallback to generated thumbnail
                 if os.path.exists("Assets/video_thumb.jpg"):
                     os.remove("Assets/video_thumb.jpg")
+                # এখানে আপনার নতুন লজিক অনুযায়ী 0 সেকেন্ডের থাম্বনেইল তৈরি হবে
                 thumb = await get_video_thumbnail(media_path, duration)
 
             if thumb and os.path.exists(thumb):
