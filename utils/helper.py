@@ -154,12 +154,20 @@ async def get_media_info(path):
 
 async def get_video_thumbnail(video_file, duration):
     output = os.path.join("Assets", "video_thumb.jpg")
+    if duration is None:
+        duration = (await get_media_info(video_file))[0]
+    if duration == 0:
+        duration = 3
+        
+    # [পরিবর্তন] আগে এখানে duration = duration // 2 ছিল।
+    # কালো স্ক্রিন সমস্যা এড়াতে আমরা ফিক্সড ২ সেকেন্ড ব্যবহার করছি।
+    timestamp = 2
     
     # ---------------------------------------------------------
     # আপনার রিকোয়ারমেন্ট অনুযায়ী পরিবর্তন এখানে করা হয়েছে
     # আগে এটি ভিডিওর মাঝখান থেকে নিত, এখন 0.1 সেকেন্ড থেকে নিবে
     # ---------------------------------------------------------
-    timestamp = 0.1 
+    
 
     cmd = [
         "ffmpeg",
@@ -404,3 +412,4 @@ async def processMediaGroup(chat_message, bot, message):
         if os.path.exists(path):
             os.remove(path)
     return False
+
