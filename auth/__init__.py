@@ -6,8 +6,8 @@ from .speedtest.speedtest import setup_speed_handler
 from .sudo.sudo import setup_sudo_handler
 from .set.set import setup_set_handler
 
-def setup_auth_handlers(app):
 
+def setup_auth_handlers(app):
     setup_sudo_handler(app)
     setup_restart_handler(app)
     setup_speed_handler(app)
