@@ -26,12 +26,10 @@ SIZE_UNITS = ["B", "KB", "MB", "GB", "TB", "PB"]
 def get_readable_file_size(size_in_bytes: Optional[float]) -> str:
     if size_in_bytes is None or size_in_bytes < 0:
         return "0B"
-
     for unit in SIZE_UNITS:
         if size_in_bytes < 1024:
             return f"{size_in_bytes:.2f} {unit}"
         size_in_bytes /= 1024
-
     return "File too large"
 
 def get_readable_time(seconds: int) -> str:
@@ -64,7 +62,6 @@ async def fileSizeLimit(file_size, message, action_type="download", is_premium=F
 async def get_parsed_msg(text, entities):
     return Parser.unparse(text, entities or [], is_html=False)
 
-# Progress bar template
 PROGRESS_BAR = """
 Percentage: {percentage:.2f}% | {current}/{total}
 Speed: {speed}/s
@@ -74,31 +71,25 @@ Estimated Time Left: {est_time} seconds
 def getChatMsgID(link: str):
     linkps = link.split("/")
     chat_id, message_thread_id, message_id = None, None, None
-    
+
     try:
         if len(linkps) == 7 and linkps[3] == "c":
-            # https://t.me/c/1192302355/322/487
             chat_id = get_channel_id(int(linkps[4]))
             message_thread_id = int(linkps[5])
             message_id = int(linkps[6])
         elif len(linkps) == 6:
             if linkps[3] == "c":
-                # https://t.me/c/1387666944/609282
                 chat_id = get_channel_id(int(linkps[4]))
                 message_id = int(linkps[5])
             else:
-                # https://t.me/TheForum/322/487
                 chat_id = linkps[3]
                 message_thread_id = int(linkps[4])
                 message_id = int(linkps[5])
-
         elif len(linkps) == 5:
-            # https://t.me/pyrogramchat/609282
             chat_id = linkps[3]
             if chat_id == "m":
                 raise ValueError("Invalid ClientType used to parse this message link")
             message_id = int(linkps[4])
-
     except (ValueError, TypeError):
         raise ValueError("Invalid post URL. Must end with a numeric ID.")
 
@@ -125,18 +116,10 @@ async def cmd_exec(cmd, shell=False):
 
 async def get_media_info(path):
     try:
-        result = await cmd_exec(
-            [
-                "ffprobe",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-print_format",
-                "json",
-                "-show_format",
-                path,
-            ]
-        )
+        result = await cmd_exec([
+            "ffprobe", "-hide_banner", "-loglevel", "error",
+            "-print_format", "json", "-show_format", path,
+        ])
     except Exception as e:
         LOGGER.error(f"Get Media Info: {e}. Mostly File not found! - File: {path}")
         return 0, None, None
@@ -158,94 +141,95 @@ async def get_video_thumbnail(video_file, duration):
         duration = (await get_media_info(video_file))[0]
     if duration == 0:
         duration = 3
-        
-    # [পরিবর্তন] আগে এখানে duration = duration // 2 ছিল।
-    # কালো স্ক্রিন সমস্যা এড়াতে আমরা ফিক্সড ২ সেকেন্ড ব্যবহার করছি।
     timestamp = 2
-    
-    # ---------------------------------------------------------
-    # আপনার রিকোয়ারমেন্ট অনুযায়ী পরিবর্তন এখানে করা হয়েছে
-    # আগে এটি ভিডিওর মাঝখান থেকে নিত, এখন 0.1 সেকেন্ড থেকে নিবে
-    # ---------------------------------------------------------
-    
-
     cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-ss",
-        f"{timestamp}", # এখানে নির্দিষ্ট সময় বসানো হলো
-        "-i",
-        video_file,
-        "-vf",
-        "thumbnail",
-        "-q:v",
-        "1",
-        "-frames:v",
-        "1",
-        "-threads",
-        f"{os.cpu_count() // 2}",
-        output,
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-ss", f"{timestamp}", "-i", video_file,
+        "-vf", "thumbnail", "-q:v", "1", "-frames:v", "1",
+        "-threads", f"{os.cpu_count() // 2}", output,
     ]
     try:
         _, err, code = await wait_for(cmd_exec(cmd), timeout=60)
         if code != 0 or not os.path.exists(output):
-            LOGGER.error(
-                f"Error while extracting thumbnail from video. Name: {video_file} stderr: {err}"
-            )
+            LOGGER.error(f"Error extracting thumbnail. Name: {video_file} stderr: {err}")
             return None
     except Exception as e:
-        LOGGER.error(
-            f"Error while extracting thumbnail from video. Name: {video_file}. Error: {e}"
-        )
+        LOGGER.error(f"Error extracting thumbnail. Name: {video_file}. Error: {e}")
         return None
     return output
 
-# Generate progress bar for downloading/uploading
 def progressArgs(action: str, progress_message, start_time):
     return (action, progress_message, start_time, PROGRESS_BAR, "▓", "░")
 
-async def send_media(
-    bot, message, media_path, media_type, caption, progress_message, start_time, thumbnail_path=None
+
+# ═══════════════════════════════════════════════════════════════════════════
+# NEW CORE FUNCTION: User Client দিয়ে Saved Messages-এ পাঠানো
+# ─────────────────────────────────────────────────────────────────────────
+# Bot কোনো media file পাঠাবে না।
+# সব upload হবে user-এর নিজের logged-in account দিয়ে,
+# তার নিজের "Saved Messages" ফোল্ডারে।
+# Bot শুধু notification message পাঠাবে (text only)।
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def send_media_to_saved(
+    user_client,         # Logged-in pyrogram user Client
+    bot,                 # Bot client - শুধু text notification-এর জন্য
+    message,             # Original bot chat message
+    media_path,          # Downloaded file-এর local path
+    media_type,          # "photo" / "video" / "audio" / "document"
+    caption,             # Caption text
+    progress_message,    # Progress message (bot chat-এ)
+    start_time,          # Upload progress start time
+    thumbnail_path=None  # Custom thumbnail path (optional)
 ):
+    """
+    User Client দিয়ে ফাইল নিজের Saved Messages-এ আপলোড করে।
+
+    ✅ Bot ব্যান হওয়ার ঝুঁকি নেই কারণ:
+       - Bot কোনো media পাঠায় না
+       - User নিজের account থেকে নিজেই upload করে
+       - Telegram-এর দৃষ্টিতে এটা normal user activity
+    """
     file_size = os.path.getsize(media_path)
 
     if not await fileSizeLimit(file_size, message, "upload"):
-        await progress_message.delete()  # Delete progress if size limit exceeded
-        return
+        await progress_message.delete()
+        return False
 
-    progress_args = progressArgs("📥 Uploading Progress", progress_message, start_time)
-    LOGGER.info(f"Uploading media: {media_path} ({media_type})")
+    # User-এর Saved Messages = "me"
+    saved_messages_chat = "me"
+    progress_args = progressArgs("📤 Uploading to Saved Messages", progress_message, start_time)
+    LOGGER.info(f"[USER CLIENT] Uploading to Saved Messages: {media_path} ({media_type})")
 
     try:
         if media_type == "photo":
-            await message.reply_photo(
-                media_path,
+            await user_client.send_photo(
+                chat_id=saved_messages_chat,
+                photo=media_path,
                 caption=caption or "",
                 progress=Leaves.progress_for_pyrogram,
                 progress_args=progress_args,
             )
-            await progress_message.delete()  # Delete after upload
+
         elif media_type == "video":
             duration = (await get_media_info(media_path))[0]
-            thumb = thumbnail_path  # Use user-set thumbnail if available
-            width, height = 480, 320  # Default dimensions
+            thumb = thumbnail_path
+            width, height = 480, 320
 
-            if thumb is None:  # Fallback to generated thumbnail
+            if thumb is None:
                 if os.path.exists("Assets/video_thumb.jpg"):
                     os.remove("Assets/video_thumb.jpg")
-                # এখানে আপনার নতুন লজিক অনুযায়ী 0 সেকেন্ডের থাম্বনেইল তৈরি হবে
                 thumb = await get_video_thumbnail(media_path, duration)
 
             if thumb and os.path.exists(thumb):
                 with Image.open(thumb) as img:
                     width, height = img.size
             else:
-                thumb = None  # Fallback to no thumbnail if file missing
+                thumb = None
 
-            await message.reply_video(
-                media_path,
+            await user_client.send_video(
+                chat_id=saved_messages_chat,
+                video=media_path,
                 duration=duration,
                 width=width,
                 height=height,
@@ -254,93 +238,99 @@ async def send_media(
                 progress=Leaves.progress_for_pyrogram,
                 progress_args=progress_args,
             )
-            await progress_message.delete()  # Delete after upload
+
         elif media_type == "audio":
             duration, artist, title = await get_media_info(media_path)
-            await message.reply_audio(
-                media_path,
+            await user_client.send_audio(
+                chat_id=saved_messages_chat,
+                audio=media_path,
                 duration=duration,
                 performer=artist,
                 title=title,
-                thumb=thumbnail_path,  # Use thumbnail path
+                thumb=thumbnail_path,
                 caption=caption or "",
                 progress=Leaves.progress_for_pyrogram,
                 progress_args=progress_args,
             )
-            await progress_message.delete()  # Delete after upload
+
         elif media_type == "document":
-            await message.reply_document(
-                media_path,
-                thumb=thumbnail_path,  # Use thumbnail path
+            await user_client.send_document(
+                chat_id=saved_messages_chat,
+                document=media_path,
+                thumb=thumbnail_path,
                 caption=caption or "",
                 progress=Leaves.progress_for_pyrogram,
                 progress_args=progress_args,
             )
-            await progress_message.delete()  # Delete after upload
+
+        else:
+            LOGGER.error(f"Unknown media_type: {media_type}")
+            await progress_message.delete()
+            return False
+
+        # Progress message delete করো
+        await progress_message.delete()
+
+        # Bot শুধু text notification পাঠাবে — কোনো file নয়
+        await bot.send_message(
+            chat_id=message.chat.id,
+            text=(
+                "**✅ ফাইল সফলভাবে আপনার Saved Messages-এ পাঠানো হয়েছে! 🚀**\n\n"
+                "📂 **Telegram খুলুন → Saved Messages** — ফাইলটি সেখানে পাবেন।\n\n"
+                "_(Bot কোনো file পাঠায় না, তাই আপনার privacy সুরক্ষিত)_"
+            )
+        )
+
+        LOGGER.info(f"[USER CLIENT] Upload successful to Saved Messages for user {message.from_user.id}")
+        return True
+
     except Exception as e:
-        LOGGER.error(f"Error uploading media {media_path}: {e}")
-        await progress_message.delete()  # Delete on error
+        LOGGER.error(f"[USER CLIENT] Error uploading to Saved Messages: {e}")
+        try:
+            await progress_message.delete()
+        except:
+            pass
         raise
 
-async def processMediaGroup(chat_message, bot, message):
+
+# ═══════════════════════════════════════════════════════════════════════════
+# processMediaGroup: Media group-ও User Client দিয়ে Saved Messages-এ যাবে
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def processMediaGroup(chat_message, bot, message, user_client=None):
+    """
+    Media group download করে User Client দিয়ে Saved Messages-এ পাঠায়।
+    user_client না দিলে bot দিয়ে পাঠানোর চেষ্টা করবে (fallback)।
+    """
     media_group_messages = await chat_message.get_media_group()
     valid_media = []
     temp_paths = []
     invalid_paths = []
 
     start_time = time()
-    progress_message = await message.reply("📥 Downloading media group...")
-    LOGGER.info(
-        f"Downloading media group with {len(media_group_messages)} items..."
-    )
+    progress_message = await message.reply("**📥 Downloading media group...**")
+    LOGGER.info(f"Downloading media group with {len(media_group_messages)} items...")
 
     for msg in media_group_messages:
         if msg.photo or msg.video or msg.document or msg.audio:
+            media_path = None
             try:
                 media_path = await msg.download(
                     progress=Leaves.progress_for_pyrogram,
-                    progress_args=progressArgs(
-                        "📥 Downloading Progress", progress_message, start_time
-                    ),
+                    progress_args=progressArgs("📥 Downloading", progress_message, start_time),
                 )
                 temp_paths.append(media_path)
 
+                caption_text = await get_parsed_msg(msg.caption or "", msg.caption_entities)
+
                 if msg.photo:
-                    valid_media.append(
-                        InputMediaPhoto(
-                            media=media_path,
-                            caption=await get_parsed_msg(
-                                msg.caption or "", msg.caption_entities
-                            ),
-                        )
-                    )
+                    valid_media.append(InputMediaPhoto(media=media_path, caption=caption_text))
                 elif msg.video:
-                    valid_media.append(
-                        InputMediaVideo(
-                            media=media_path,
-                            caption=await get_parsed_msg(
-                                msg.caption or "", msg.caption_entities
-                            ),
-                        )
-                    )
+                    valid_media.append(InputMediaVideo(media=media_path, caption=caption_text))
                 elif msg.document:
-                    valid_media.append(
-                        InputMediaDocument(
-                            media=media_path,
-                            caption=await get_parsed_msg(
-                                msg.caption or "", msg.caption_entities
-                            ),
-                        )
-                    )
+                    valid_media.append(InputMediaDocument(media=media_path, caption=caption_text))
                 elif msg.audio:
-                    valid_media.append(
-                        InputMediaAudio(
-                            media=media_path,
-                            caption=await get_parsed_msg(
-                                msg.caption or "", msg.caption_entities
-                            ),
-                        )
-                    )
+                    valid_media.append(InputMediaAudio(media=media_path, caption=caption_text))
 
             except Exception as e:
                 LOGGER.info(f"Error downloading media: {e}")
@@ -351,52 +341,39 @@ async def processMediaGroup(chat_message, bot, message):
     LOGGER.info(f"Valid media count: {len(valid_media)}")
 
     if valid_media:
+        # User client থাকলে Saved Messages-এ পাঠাও, না হলে bot দিয়ে চেষ্টা
+        upload_client = user_client if user_client else bot
+        upload_target = "me" if user_client else message.chat.id
+
         try:
-            await bot.send_media_group(chat_id=message.chat.id, media=valid_media)
+            await upload_client.send_media_group(chat_id=upload_target, media=valid_media)
             await progress_message.delete()
+
+            if user_client:
+                await bot.send_message(
+                    chat_id=message.chat.id,
+                    text=(
+                        "**✅ Media group আপনার Saved Messages-এ পাঠানো হয়েছে! 🚀**\n\n"
+                        "📂 **Telegram → Saved Messages** খুলুন।"
+                    )
+                )
         except Exception:
-            await message.reply(
-                "**❌ Failed to send media group, trying individual uploads**"
-            )
+            await message.reply("**❌ Media group একসাথে পাঠানো যায়নি। আলাদা করে চেষ্টা করা হচ্ছে...**")
             for media in valid_media:
                 try:
                     if isinstance(media, InputMediaPhoto):
-                        await bot.send_photo(
-                            chat_id=message.chat.id,
-                            photo=media.media,
-                            caption=media.caption,
-                        )
+                        await upload_client.send_photo(chat_id=upload_target, photo=media.media, caption=media.caption)
                     elif isinstance(media, InputMediaVideo):
-                        await bot.send_video(
-                            chat_id=message.chat.id,
-                            video=media.media,
-                            caption=media.caption,
-                        )
+                        await upload_client.send_video(chat_id=upload_target, video=media.media, caption=media.caption)
                     elif isinstance(media, InputMediaDocument):
-                        await bot.send_document(
-                            chat_id=message.chat.id,
-                            document=media.media,
-                            caption=media.caption,
-                        )
+                        await upload_client.send_document(chat_id=upload_target, document=media.media, caption=media.caption)
                     elif isinstance(media, InputMediaAudio):
-                        await bot.send_audio(
-                            chat_id=message.chat.id,
-                            audio=media.media,
-                            caption=media.caption,
-                        )
-                    elif isinstance(media, Voice):
-                        await bot.send_voice(
-                            chat_id=message.chat.id,
-                            voice=media.media,
-                            caption=media.caption,
-                        )
+                        await upload_client.send_audio(chat_id=upload_target, audio=media.media, caption=media.caption)
                 except Exception as individual_e:
-                    await message.reply(
-                        f"Failed to upload individual media: {individual_e}"
-                    )
-
+                    await message.reply(f"**❌ Failed to upload: {individual_e}**")
             await progress_message.delete()
 
+        # Cleanup temp files
         for path in temp_paths:
             if os.path.exists(path):
                 os.remove(path)
@@ -407,9 +384,26 @@ async def processMediaGroup(chat_message, bot, message):
         return True
 
     await progress_message.delete()
-    await message.reply("❌ No valid media found in the media group.")
+    await message.reply("**❌ No valid media found in the media group.**")
     for path in invalid_paths:
         if os.path.exists(path):
             os.remove(path)
     return False
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# LEGACY: পুরানো send_media — এখন deprecated, নতুন code ব্যবহার করুন
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def send_media(
+    bot, message, media_path, media_type, caption, progress_message, start_time, thumbnail_path=None
+):
+    """
+    DEPRECATED: Bot দিয়ে file পাঠানো বন্ধ।
+    send_media_to_saved(user_client, bot, ...) ব্যবহার করুন।
+    """
+    LOGGER.warning("send_media() is deprecated. Use send_media_to_saved() with user_client.")
+    await progress_message.edit_text(
+        "**⚠️ System error: Please contact support.**"
+    )
+    await progress_message.delete()

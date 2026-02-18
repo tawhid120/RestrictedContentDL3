@@ -16,25 +16,26 @@ from utils import (
     get_parsed_msg,
     fileSizeLimit,
     progressArgs,
-    send_media,
-    LOGGER
+    send_media_to_saved,   # ← User Client দিয়ে Saved Messages-এ
 )
 from config import COMMAND_PREFIX
 from core import prem_plan1, prem_plan2, prem_plan3, user_sessions, user_activity_collection
+from utils.logging_setup import LOGGER
 
 pbdl_data = {}
 user = None
 
 def setup_pvdl_handler(app: Client):
-    async def get_batch_limits(user_id: int) -> tuple[bool, int]:
+
+    async def get_batch_limits(user_id: int) -> tuple:
         current_time = datetime.utcnow()
         if prem_plan3.find_one({"user_id": user_id, "expiry_date": {"$gt": current_time}}):
-            return True, 300  # Plan3: 300 messages
+            return True, 300
         elif prem_plan2.find_one({"user_id": user_id, "expiry_date": {"$gt": current_time}}):
-            return True, 200  # Plan2: 200 messages
+            return True, 200
         elif prem_plan1.find_one({"user_id": user_id, "expiry_date": {"$gt": current_time}}):
-            return True, 100  # Plan1: 100 messages
-        return False, 0      # Non-premium: 0 messages
+            return True, 100
+        return False, 0
 
     async def is_premium_user(user_id: int) -> bool:
         current_time = datetime.utcnow()
@@ -56,7 +57,7 @@ def setup_pvdl_handler(app: Client):
             try:
                 await user.stop()
             except Exception as e:
-                LOGGER.error(f"Error stopping existing user client for user {user_id}: {e}")
+                LOGGER.error(f"Error stopping existing user client: {e}")
             user = None
         try:
             user = Client(
@@ -67,7 +68,7 @@ def setup_pvdl_handler(app: Client):
             await user.start()
             return user
         except Exception as e:
-            LOGGER.error(f"Failed to initialize user client for user {user_id}, session {session_id}: {e}")
+            LOGGER.error(f"Failed to initialize user client for user {user_id}: {e}")
             return None
 
     async def show_account_selection(client: Client, message: Message, post_url: str = None):
@@ -78,7 +79,7 @@ def setup_pvdl_handler(app: Client):
 
         sessions = user_session.get("sessions", [])
         if len(sessions) == 1:
-            return sessions[0]["session_id"]  # Auto-select if only one account
+            return sessions[0]["session_id"]
 
         pbdl_data[message.chat.id] = {"post_url": post_url, "message_id": message.id, "stage": "select_account"}
 
@@ -94,7 +95,8 @@ def setup_pvdl_handler(app: Client):
         buttons.append([InlineKeyboardButton("Cancel", callback_data="pbdl_cancel_account")])
 
         await message.reply_text(
-            "**📤 Select an account to use for private batch download:**",
+            "**📤 কোন account দিয়ে batch download করবেন?**\n"
+            "_(এই account-এর Saved Messages-এ files যাবে)_",
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode=ParseMode.MARKDOWN
         )
@@ -106,49 +108,40 @@ def setup_pvdl_handler(app: Client):
         chat_id = message.chat.id
         LOGGER.info(f"/pbdl command received from user {user_id}")
 
-        # Check premium status
         if not await is_premium_user(user_id):
             await message.reply_text(
                 "**❌ Only premium users can use /pbdl! Upgrade: /plans**",
                 parse_mode=ParseMode.MARKDOWN
             )
-            LOGGER.warning(f"Non-premium user {user_id} attempted /pbdl")
             return
 
-        # Check if user has logged-in accounts
         user_session = user_sessions.find_one({"user_id": user_id})
         if not user_session or not user_session.get("sessions"):
             await message.reply_text(
                 "**❌ You must log in with /login to use /pbdl!**",
                 parse_mode=ParseMode.MARKDOWN
             )
-            LOGGER.warning(f"User {user_id} not logged in for /pbdl")
             return
 
-        # Extract URL
         if len(message.command) < 2:
             await message.reply_text(
                 "**❌ Please provide a valid URL! Usage: /pbdl {url}**",
                 parse_mode=ParseMode.MARKDOWN
             )
-            LOGGER.warning(f"No URL provided in /pbdl command by user {user_id}")
             return
 
         post_url = message.command[1]
         if "?" in post_url:
             post_url = post_url.split("?", 1)[0]
 
-        # Validate URL format
         match = re.match(r"(?:https?://)?(?:t\.me|telegram\.me)/(?:c/)?([a-zA-Z0-9_]+|\d+)/(\d+)", post_url)
         if not match:
             await message.reply_text(
-                "**❌ Invalid URL! Please use a valid Telegram message link (e.g., https://t.me/c/123/456)**",
+                "**❌ Invalid URL! Please use a valid Telegram message link.**",
                 parse_mode=ParseMode.MARKDOWN
             )
-            LOGGER.warning(f"Invalid URL format: {post_url} by user {user_id}")
             return
 
-        # Show account selection
         selected_session_id = await show_account_selection(client, message, post_url)
         if selected_session_id:
             await prompt_message_count(client, message, selected_session_id, post_url)
@@ -160,7 +153,7 @@ def setup_pvdl_handler(app: Client):
         user_id = callback_query.from_user.id
         pbdl_info = pbdl_data.get(chat_id)
 
-        if not pbdl_info or pbdl_info["user_id"] != user_id:
+        if not pbdl_info or pbdl_info.get("user_id") != user_id:
             await callback_query.message.edit_text(
                 "**❌ Invalid or expired batch session!**",
                 parse_mode=ParseMode.MARKDOWN
@@ -174,7 +167,6 @@ def setup_pvdl_handler(app: Client):
             )
             if chat_id in pbdl_data:
                 del pbdl_data[chat_id]
-            LOGGER.info(f"Private batch download cancelled by user {user_id}")
             return
 
         if data.startswith("pbdl_select_"):
@@ -184,7 +176,6 @@ def setup_pvdl_handler(app: Client):
 
             original_message = await client.get_messages(chat_id, original_message_id)
             await callback_query.message.delete()
-
             await prompt_message_count(client, original_message, session_id, post_url)
 
         elif data.startswith("pbdl_confirm_"):
@@ -194,7 +185,6 @@ def setup_pvdl_handler(app: Client):
                     parse_mode=ParseMode.MARKDOWN
                 )
                 return
-
             await process_batch_download(client, callback_query.message, pbdl_info)
             if chat_id in pbdl_data:
                 del pbdl_data[chat_id]
@@ -209,7 +199,8 @@ def setup_pvdl_handler(app: Client):
             "stage": "await_count"
         }
         await message.reply_text(
-            "**📥 How many messages do you want to scrape?**",
+            "**📥 কতটি message scrape করতে চান?**\n"
+            "_(সব file আপনার Saved Messages-এ যাবে)_",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("Confirm", callback_data=f"pbdl_confirm_{chat_id}"),
                 InlineKeyboardButton("Cancel", callback_data=f"pbdl_cancel_{chat_id}")
@@ -217,7 +208,9 @@ def setup_pvdl_handler(app: Client):
             parse_mode=ParseMode.MARKDOWN
         )
 
-    @app.on_message(filters.text & filters.create(lambda _, __, message: message.chat.id in pbdl_data and pbdl_data[message.chat.id].get("stage") == "await_count"))
+    @app.on_message(filters.text & filters.create(
+        lambda _, __, msg: msg.chat.id in pbdl_data and pbdl_data[msg.chat.id].get("stage") == "await_count"
+    ))
     async def count_handler(client, message: Message):
         chat_id = message.chat.id
         user_id = message.from_user.id
@@ -229,28 +222,20 @@ def setup_pvdl_handler(app: Client):
             count = int(message.text)
             is_premium, max_messages = await get_batch_limits(user_id)
             if not is_premium:
-                await message.reply_text(
-                    "**❌ Only premium users can use /pbdl! Upgrade: /plans**",
-                    parse_mode=ParseMode.MARKDOWN
-                )
+                await message.reply_text("**❌ Only premium users can use /pbdl! Upgrade: /plans**", parse_mode=ParseMode.MARKDOWN)
                 return
             if count < 1:
-                await message.reply_text(
-                    "**❌ Please enter a valid number greater than 0!**",
-                    parse_mode=ParseMode.MARKDOWN
-                )
+                await message.reply_text("**❌ Please enter a valid number greater than 0!**", parse_mode=ParseMode.MARKDOWN)
                 return
             if count > max_messages:
-                await message.reply_text(
-                    f"**❌ You can only scrape up to {max_messages} messages! Upgrade: /plans**",
-                    parse_mode=ParseMode.MARKDOWN
-                )
+                await message.reply_text(f"**❌ You can only scrape up to {max_messages} messages! Upgrade: /plans**", parse_mode=ParseMode.MARKDOWN)
                 return
 
             pbdl_info["count"] = count
             pbdl_info["stage"] = "confirmed"
             await message.reply_text(
-                f"**✅ You have selected {count} message{'s' if count > 1 else ''} to scrape. Press confirm to start.**",
+                f"**✅ {count}টি message scrape করা হবে।**\n"
+                f"**সব file আপনার Saved Messages-এ যাবে। Confirm করুন:**",
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("Confirm", callback_data=f"pbdl_confirm_{chat_id}"),
                     InlineKeyboardButton("Cancel", callback_data=f"pbdl_cancel_{chat_id}")
@@ -258,10 +243,7 @@ def setup_pvdl_handler(app: Client):
                 parse_mode=ParseMode.MARKDOWN
             )
         except ValueError:
-            await message.reply_text(
-                "**❌ Please enter valid integer!**",
-                parse_mode=ParseMode.MARKDOWN
-            )
+            await message.reply_text("**❌ Please enter a valid integer!**", parse_mode=ParseMode.MARKDOWN)
 
     async def process_batch_download(bot: Client, message: Message, pbdl_info: dict):
         user_id = pbdl_info["user_id"]
@@ -276,11 +258,11 @@ def setup_pvdl_handler(app: Client):
                 "**❌ Failed to initialize user client! Please try logging in again.**",
                 parse_mode=ParseMode.MARKDOWN
             )
-            LOGGER.warning(f"Failed to initialize user client for user {user_id}, session {session_id}")
             return
 
         await message.edit_text(
-            "**📥 Processing private batch download...**",
+            "**📥 Private batch download শুরু হচ্ছে...**\n"
+            "_(সব file আপনার Saved Messages-এ যাবে)_",
             parse_mode=ParseMode.MARKDOWN
         )
 
@@ -292,12 +274,16 @@ def setup_pvdl_handler(app: Client):
             user_data = user_activity_collection.find_one({"user_id": user_id})
             thumbnail_path = user_data.get("thumbnail_path") if user_data else None
 
+            success_count = 0
+            fail_count = 0
+
             for chat_message in messages:
                 if not chat_message:
                     continue
 
-                LOGGER.info(f"Downloading media from message ID {chat_message.id} for user {user_id}")
+                LOGGER.info(f"Processing message ID {chat_message.id} for user {user_id}")
 
+                # File size check
                 if chat_message.document or chat_message.video or chat_message.audio:
                     file_size = (
                         chat_message.document.file_size if chat_message.document else
@@ -305,34 +291,35 @@ def setup_pvdl_handler(app: Client):
                         chat_message.audio.file_size
                     )
                     if not await fileSizeLimit(file_size, message, "download", True):
+                        fail_count += 1
                         continue
 
                 parsed_caption = await get_parsed_msg(chat_message.caption or "", chat_message.caption_entities)
                 parsed_text = await get_parsed_msg(chat_message.text or "", chat_message.entities)
 
+                # Media group
                 if chat_message.media_group_id:
-                    if not await processMediaGroup(chat_message, bot, message):
-                        await bot.send_message(
-                            chat_id=chat_id,
-                            text="**❌ Could not extract any valid media from the media group.**",
-                            parse_mode=ParseMode.MARKDOWN
-                        )
+                    if not await processMediaGroup(chat_message, bot, message, user_client=user_client):
+                        fail_count += 1
+                    else:
+                        success_count += 1
                     continue
 
+                # Single media
                 elif chat_message.media:
                     start_time = time()
                     progress_message = await bot.send_message(
                         chat_id=chat_id,
-                        text="**📥 Downloading Progress...**",
+                        text=f"**📥 Downloading ({success_count + fail_count + 1}/{count})...**",
                         parse_mode=ParseMode.MARKDOWN
                     )
 
                     media_path = await chat_message.download(
                         progress=Leaves.progress_for_pyrogram,
-                        progress_args=progressArgs("📥 Downloading Progress", progress_message, start_time)
+                        progress_args=progressArgs("📥 Downloading", progress_message, start_time)
                     )
 
-                    LOGGER.info(f"Downloaded media: {media_path} for user {user_id}")
+                    LOGGER.info(f"Downloaded: {media_path}")
 
                     media_type = (
                         "photo" if chat_message.photo else
@@ -340,41 +327,56 @@ def setup_pvdl_handler(app: Client):
                         "audio" if chat_message.audio else
                         "document"
                     )
-                    await send_media(
-                        bot,
-                        message,
-                        media_path,
-                        media_type,
-                        parsed_caption,
-                        progress_message,
-                        start_time,
-                        thumbnail_path=thumbnail_path
-                    )
+
+                    # ── KEY: User Client দিয়ে Saved Messages-এ upload ──
+                    try:
+                        await send_media_to_saved(
+                            user_client=user_client,
+                            bot=bot,
+                            message=message,
+                            media_path=media_path,
+                            media_type=media_type,
+                            caption=parsed_caption,
+                            progress_message=progress_message,
+                            start_time=start_time,
+                            thumbnail_path=thumbnail_path
+                        )
+                        success_count += 1
+                    except Exception as e:
+                        LOGGER.error(f"Failed to upload message {chat_message.id}: {e}")
+                        fail_count += 1
 
                     if os.path.exists(media_path):
                         os.remove(media_path)
-                    await progress_message.delete()
 
+                # Text only
                 elif chat_message.text or chat_message.caption:
                     await bot.send_message(
                         chat_id=chat_id,
                         text=parsed_text or parsed_caption,
                         parse_mode=ParseMode.MARKDOWN
                     )
+                    success_count += 1
 
-                await asyncio.sleep(0.5)  # Prevent rate-limiting
+                await asyncio.sleep(0.5)
 
+            # Completion message
             completion_msg = await bot.send_message(
                 chat_id=chat_id,
-                text="**✅ Batch process completed successfully.**",
+                text=(
+                    f"**✅ Batch download সম্পন্ন!**\n\n"
+                    f"**✅ সফল: {success_count}**\n"
+                    f"**❌ ব্যর্থ: {fail_count}**\n\n"
+                    f"📂 **Telegram → Saved Messages** খুলুন।"
+                ),
                 parse_mode=ParseMode.MARKDOWN
             )
             try:
                 await bot.pin_chat_message(chat_id, completion_msg.id, both_sides=True)
             except Exception as e:
-                LOGGER.warning(f"Failed to pin completion message for user {user_id}: {e}")
+                LOGGER.warning(f"Failed to pin completion message: {e}")
 
-            LOGGER.info(f"Private batch download completed for user {user_id}: {count} messages from {post_url}")
+            LOGGER.info(f"Batch download done for user {user_id}: {success_count} ok, {fail_count} failed")
 
         except (PeerIdInvalid, BadRequest):
             await bot.send_message(
@@ -382,20 +384,19 @@ def setup_pvdl_handler(app: Client):
                 text="**❌ Make sure logged in user client is part of the channel.**",
                 parse_mode=ParseMode.MARKDOWN
             )
-            LOGGER.error(f"User {user_id} not part of chat for URL: {post_url}")
         except Exception as e:
             await bot.send_message(
                 chat_id=chat_id,
-                text=f"**❌ Error processing batch download: {str(e)}**",
+                text=f"**❌ Error: {str(e)}**",
                 parse_mode=ParseMode.MARKDOWN
             )
-            LOGGER.error(f"Failed to process batch download for user {user_id}: {e}")
+            LOGGER.error(f"Batch download failed for user {user_id}: {e}")
         finally:
             if user:
                 try:
                     await user.stop()
                 except Exception as e:
-                    LOGGER.error(f"Error stopping user client for user {user_id}: {e}")
+                    LOGGER.error(f"Error stopping user client: {e}")
 
     app.add_handler(app.on_message, group=1)
     app.add_handler(app.on_callback_query, group=2)
