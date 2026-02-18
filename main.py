@@ -1,5 +1,15 @@
 # Copyright @ISmartDevs
 # Channel t.me/TheSmartDev
+import sys
+
+# ── uvloop: asyncio event loop 2-4x দ্রুত করে (Linux only) ──
+try:
+    import uvloop
+    uvloop.install()  # MUST be called before any asyncio/pyrogram usage
+    print("✅ uvloop installed — event loop boosted!")
+except ImportError:
+    print("⚠️ uvloop not available (Windows?), using default asyncio loop")
+
 from utils import LOGGER
 from auth import setup_auth_handlers
 from plugins import setup_plugins_handlers

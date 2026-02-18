@@ -16,8 +16,9 @@ from utils import (
     get_parsed_msg,
     fileSizeLimit,
     progressArgs,
-    send_media_to_saved,   # ← User Client দিয়ে Saved Messages-এ
+    send_media_to_saved,
 )
+from utils.helper import create_optimized_user_client  # ← optimized client
 from config import COMMAND_PREFIX
 from core import prem_plan1, prem_plan2, prem_plan3, user_sessions, user_activity_collection
 from utils.logging_setup import LOGGER
@@ -60,12 +61,13 @@ def setup_pvdl_handler(app: Client):
                 LOGGER.error(f"Error stopping existing user client: {e}")
             user = None
         try:
-            user = Client(
-                f"user_session_{user_id}_{session_id}",
-                workers=1000,
+            # ── Optimized user client: max_concurrent_transmissions=5 ──
+            user = create_optimized_user_client(
+                session_name=f"user_session_{user_id}_{session_id}",
                 session_string=session["session_string"]
             )
             await user.start()
+            LOGGER.info(f"✅ Optimized user client started for batch download, user {user_id}")
             return user
         except Exception as e:
             LOGGER.error(f"Failed to initialize user client for user {user_id}: {e}")
@@ -283,7 +285,6 @@ def setup_pvdl_handler(app: Client):
 
                 LOGGER.info(f"Processing message ID {chat_message.id} for user {user_id}")
 
-                # File size check
                 if chat_message.document or chat_message.video or chat_message.audio:
                     file_size = (
                         chat_message.document.file_size if chat_message.document else
@@ -297,7 +298,6 @@ def setup_pvdl_handler(app: Client):
                 parsed_caption = await get_parsed_msg(chat_message.caption or "", chat_message.caption_entities)
                 parsed_text = await get_parsed_msg(chat_message.text or "", chat_message.entities)
 
-                # Media group
                 if chat_message.media_group_id:
                     if not await processMediaGroup(chat_message, bot, message, user_client=user_client):
                         fail_count += 1
@@ -305,7 +305,6 @@ def setup_pvdl_handler(app: Client):
                         success_count += 1
                     continue
 
-                # Single media
                 elif chat_message.media:
                     start_time = time()
                     progress_message = await bot.send_message(
@@ -328,7 +327,6 @@ def setup_pvdl_handler(app: Client):
                         "document"
                     )
 
-                    # ── KEY: User Client দিয়ে Saved Messages-এ upload ──
                     try:
                         await send_media_to_saved(
                             user_client=user_client,
@@ -349,7 +347,6 @@ def setup_pvdl_handler(app: Client):
                     if os.path.exists(media_path):
                         os.remove(media_path)
 
-                # Text only
                 elif chat_message.text or chat_message.caption:
                     await bot.send_message(
                         chat_id=chat_id,
@@ -358,9 +355,8 @@ def setup_pvdl_handler(app: Client):
                     )
                     success_count += 1
 
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)  # পূর্বে 0.5 ছিল, একটু কমালে দ্রুত হবে
 
-            # Completion message
             completion_msg = await bot.send_message(
                 chat_id=chat_id,
                 text=(

@@ -163,6 +163,26 @@ def progressArgs(action: str, progress_message, start_time):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# OPTIMIZED: User Client initialize করার helper
+# max_concurrent_transmissions বাড়িয়ে স্পিড boost করা হয়েছে
+# ═══════════════════════════════════════════════════════════════════════════
+
+def create_optimized_user_client(session_name: str, session_string: str):
+    """
+    Optimized user client তৈরি করে।
+    - workers=500: parallel task handling
+    - max_concurrent_transmissions=5: একসাথে ৫টা upload/download চলতে পারবে
+    """
+    from pyrogram import Client as PyroClient
+    return PyroClient(
+        session_name,
+        session_string=session_string,
+        workers=500,
+        max_concurrent_transmissions=5,  # ← এটাই upload স্পিড বাড়ানোর মূল চাবিকাঠি
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # NEW CORE FUNCTION: User Client দিয়ে Saved Messages-এ পাঠানো
 # ─────────────────────────────────────────────────────────────────────────
 # Bot কোনো media file পাঠাবে না।
@@ -189,6 +209,11 @@ async def send_media_to_saved(
        - Bot কোনো media পাঠায় না
        - User নিজের account থেকে নিজেই upload করে
        - Telegram-এর দৃষ্টিতে এটা normal user activity
+    
+    🚀 স্পিড অপ্টিমাইজেশন:
+       - tgcrypto-pyrofork: C-level encryption (Python-এর চেয়ে অনেক দ্রুত)
+       - uvloop: event loop 2-4x দ্রুত
+       - max_concurrent_transmissions=5: parallel chunks
     """
     file_size = os.path.getsize(media_path)
 

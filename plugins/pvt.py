@@ -14,10 +14,11 @@ from utils import (
     get_parsed_msg,
     fileSizeLimit,
     progressArgs,
-    send_media_to_saved,   # ← Bot দিয়ে নয়, User Client দিয়ে Saved Messages-এ
+    send_media_to_saved,
     get_readable_file_size,
     get_readable_time,
 )
+from utils.helper import create_optimized_user_client  # ← optimized client
 from utils.logging_setup import LOGGER
 from config import COMMAND_PREFIX
 from core import prem_plan1, prem_plan2, prem_plan3, user_sessions, user_activity_collection
@@ -50,12 +51,13 @@ def setup_pvt_handler(app: Client):
                 LOGGER.error(f"Error stopping existing user client: {e}")
             user = None
         try:
-            user = Client(
-                f"user_session_{user_id}_{session_id}",
-                workers=1000,
+            # ── Optimized user client: max_concurrent_transmissions=5 ──
+            user = create_optimized_user_client(
+                session_name=f"user_session_{user_id}_{session_id}",
                 session_string=session["session_string"]
             )
             await user.start()
+            LOGGER.info(f"✅ Optimized user client started for user {user_id}")
             return user
         except Exception as e:
             LOGGER.error(f"Failed to initialize user client for user {user_id}: {e}")
@@ -151,7 +153,6 @@ def setup_pvt_handler(app: Client):
     async def process_pdl(bot: Client, message: Message, session_id: str, post_url: str):
         user_id = message.from_user.id
 
-        # ── User Client initialize করো ──
         user_client = await get_user_client(user_id, session_id)
         if user_client is None:
             await message.reply_text(
@@ -167,7 +168,6 @@ def setup_pvt_handler(app: Client):
             )
             return
 
-        # Bot-এ শুধু status message
         status_msg = await message.reply_text(
             "**🔍 Link processing... ⏳**\n"
             "_(ফাইল আপনার Saved Messages-এ যাবে, bot-এ নয়)_",
@@ -176,12 +176,10 @@ def setup_pvt_handler(app: Client):
 
         try:
             chat_id, message_id = getChatMsgID(post_url)
-            # User client দিয়ে message fetch করো
             chat_message = await user_client.get_messages(chat_id=chat_id, message_ids=message_id)
 
             LOGGER.info(f"Downloading media from URL: {post_url} for user {user_id}")
 
-            # File size check
             if chat_message.document or chat_message.video or chat_message.audio:
                 file_size = (
                     chat_message.document.file_size if chat_message.document else
@@ -195,7 +193,6 @@ def setup_pvt_handler(app: Client):
             parsed_caption = await get_parsed_msg(chat_message.caption or "", chat_message.caption_entities)
             parsed_text = await get_parsed_msg(chat_message.text or "", chat_message.entities)
 
-            # Media group হলে
             if chat_message.media_group_id:
                 await status_msg.delete()
                 if not await processMediaGroup(chat_message, bot, message, user_client=user_client):
@@ -205,7 +202,6 @@ def setup_pvt_handler(app: Client):
                     )
                 return
 
-            # Single media হলে
             elif chat_message.media:
                 start_time = time()
                 progress_message = await message.reply_text(
@@ -214,7 +210,6 @@ def setup_pvt_handler(app: Client):
                 )
                 await status_msg.delete()
 
-                # User client দিয়ে download
                 media_path = await chat_message.download(
                     progress=Leaves.progress_for_pyrogram,
                     progress_args=progressArgs("📥 Downloading", progress_message, start_time),
@@ -222,7 +217,6 @@ def setup_pvt_handler(app: Client):
 
                 LOGGER.info(f"Downloaded: {media_path}")
 
-                # User-এর thumbnail
                 user_data = user_activity_collection.find_one({"user_id": user_id})
                 thumbnail_path = user_data.get("thumbnail_path") if user_data else None
 
@@ -233,7 +227,6 @@ def setup_pvt_handler(app: Client):
                     "document"
                 )
 
-                # ── KEY CHANGE: User Client দিয়ে Saved Messages-এ upload ──
                 await send_media_to_saved(
                     user_client=user_client,
                     bot=bot,
@@ -246,11 +239,9 @@ def setup_pvt_handler(app: Client):
                     thumbnail_path=thumbnail_path
                 )
 
-                # Local file cleanup
                 if os.path.exists(media_path):
                     os.remove(media_path)
 
-            # Text only message হলে
             elif chat_message.text or chat_message.caption:
                 await status_msg.delete()
                 await message.reply_text(parsed_text or parsed_caption, parse_mode=ParseMode.MARKDOWN)
