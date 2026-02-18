@@ -1,288 +1,207 @@
 # Copyright @ISmartDevs
 # Channel t.me/TheSmartDev
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode, ChatType
 from pyrogram.handlers import MessageHandler
 from pyrogram.errors import ChannelInvalid, ChannelPrivate, PeerIdInvalid, FileReferenceExpired
 from config import COMMAND_PREFIX
-from utils import LOGGER
+from utils.logging_setup import LOGGER
+from utils.force_sub import check_force_sub, send_force_sub_message
 from core import daily_limit, prem_plan1, prem_plan2, prem_plan3, user_activity_collection
-from datetime import datetime, timedelta
-import re
-import asyncio
+from datetime import datetime
+import re, asyncio
+
 
 def setup_public_handler(app: Client):
+
     async def dl_command(client: Client, message: Message):
         user_id = message.from_user.id
         chat_id = message.chat.id
 
-        # Extract URL from command
-        if len(message.command) < 2:
-            await message.reply_text(
-                "**Please provide a valid URL! Usage: /dl {url}**",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            LOGGER.warning(f"No URL provided in /dl command by user {user_id}")
+        # Force-sub gate
+        if not await check_force_sub(client, user_id):
+            await send_force_sub_message(client, message)
             return
 
-        url = message.command[1]
-        # Handle t.me and telegram.me URLs, including private links (t.me/c/)
-        match = re.match(r"(?:https?://)?(?:t\.me|telegram\.me)/(?:c/)?([a-zA-Z0-9_]+)/(\d+)", url)
+        if len(message.command) < 2:
+            await message.reply_text(
+                "⚠️ **No link provided!**\n\n"
+                "**Usage:** `/dl <telegram_message_link>`\n"
+                "**Example:** `/dl https://t.me/channel/123`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        url       = message.command[1]
+        match     = re.match(r"(?:https?://)?(?:t\.me|telegram\.me)/(?:c/)?([a-zA-Z0-9_]+)/(\d+)", url)
         if not match:
             await message.reply_text(
-                "**Invalid URL! Please use a valid Telegram message link**",
-                parse_mode=ParseMode.MARKDOWN
+                "❌ **Invalid link!**\n\nPlease send a valid Telegram message link.\n"
+                "Example: `https://t.me/channelname/123`",
+                parse_mode=ParseMode.MARKDOWN,
             )
-            LOGGER.warning(f"Invalid URL format: {url} by user {user_id}")
             return
 
         channel_username, message_id = match.groups()
         message_id = int(message_id)
         is_private = "c/" in url
 
-        # Check if it's a private link
         if is_private:
             await message.reply_text(
-                "**Private links require a premium plan and login! Use /login and upgrade: /plans**",
-                parse_mode=ParseMode.MARKDOWN
+                "🔐 **Private Link Detected**\n\n"
+                "This link is from a private channel. You need a **premium plan** and a "
+                "logged-in account to download it.\n\n"
+                "👉 Use `/plans` to upgrade, then `/login` to add your account.\n"
+                "Then use `/pdl` instead of `/dl`.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("💎 View Plans", callback_data="menu_plans")
+                ]]),
             )
-            LOGGER.warning(f"Private link {url} attempted by user {user_id} without login")
             return
 
-        # Handle public links
         if not channel_username.startswith("@"):
             channel_username = f"@{channel_username}"
 
-        # Check if user has a premium plan
-        is_premium = (
-            prem_plan1.find_one({"user_id": user_id}) or
-            prem_plan2.find_one({"user_id": user_id}) or
-            prem_plan3.find_one({"user_id": user_id})
-        )
+        is_premium = any(col.find_one({"user_id": user_id}) for col in (prem_plan1, prem_plan2, prem_plan3))
 
-        # Send processing message
         processing_msg = await message.reply_text(
-            "**Downloading restricted media ⏳**",
-            parse_mode=ParseMode.MARKDOWN
+            "⏳ **Fetching your content…** Please wait a moment.",
+            parse_mode=ParseMode.MARKDOWN,
         )
-        await asyncio.sleep(0.1)  # Small delay to prevent rate-limiting
+        await asyncio.sleep(0.1)
 
-        # Check channel accessibility
+        # Verify channel
         try:
             chat = await client.get_chat(channel_username)
-            if chat.type not in [ChatType.CHANNEL, ChatType.SUPERGROUP]:
-                await client.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=processing_msg.id,
-                    text="**This command only supports channels or supergroups!**",
-                    parse_mode=ParseMode.MARKDOWN
+            if chat.type not in (ChatType.CHANNEL, ChatType.SUPERGROUP):
+                await processing_msg.edit_text(
+                    "❌ **Unsupported source.**\nThis bot only supports channels and supergroups.",
+                    parse_mode=ParseMode.MARKDOWN,
                 )
-                LOGGER.error(f"Invalid chat type for {channel_username}: {chat.type}")
                 return
-
         except (ChannelInvalid, PeerIdInvalid):
-            await client.edit_message_text(
-                chat_id=chat_id,
-                message_id=processing_msg.id,
-                text="**Invalid channel or group! Ensure it's public and accessible.**",
-                parse_mode=ParseMode.MARKDOWN
+            await processing_msg.edit_text(
+                "❌ **Channel not found!**\nMake sure the channel is public and the link is correct.",
+                parse_mode=ParseMode.MARKDOWN,
             )
-            LOGGER.error(f"Invalid channel or group: {channel_username}")
             return
         except ChannelPrivate:
             if not is_premium:
-                await client.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=processing_msg.id,
-                    text="**This channel is private! Upgrade to premium and use /login: /plans**",
-                    parse_mode=ParseMode.MARKDOWN
+                await processing_msg.edit_text(
+                    "🔐 **Private Channel**\n\nThis channel is private. "
+                    "Upgrade to premium and use `/pdl` with a logged-in account.",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("💎 View Plans", callback_data="menu_plans")
+                    ]]),
                 )
-                LOGGER.error(f"Private channel {channel_username} attempted by free user {user_id}")
                 return
         except Exception as e:
-            await client.edit_message_text(
-                chat_id=chat_id,
-                message_id=processing_msg.id,
-                text="**Error accessing the channel! Ensure the link is correct and the channel is accessible.**",
-                parse_mode=ParseMode.MARKDOWN
+            await processing_msg.edit_text(
+                "❌ **Could not access the channel.** Please check the link and try again.",
+                parse_mode=ParseMode.MARKDOWN,
             )
             LOGGER.error(f"Failed to fetch chat {channel_username}: {e}")
             return
 
-        # Check daily limit for free users
+        # Daily limit check (free users)
         if not is_premium:
-            today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            today      = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
             user_limit = daily_limit.find_one({"user_id": user_id})
-            if user_limit and user_limit.get("date") >= today:
-                downloads = user_limit.get("downloads", 0)
-                if downloads >= 10:
-                    await client.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=processing_msg.id,
-                        text="**Daily limit of 10 downloads reached! Upgrade to premium for more: /plans**",
-                        parse_mode=ParseMode.MARKDOWN
-                    )
-                    LOGGER.info(f"Daily limit reached for user {user_id}")
-                    return
-                daily_limit.update_one(
-                    {"user_id": user_id},
-                    {
-                        "$set": {"downloads": downloads + 1, "date": today},
-                        "$inc": {"total_downloads": 1}
-                    },
-                    upsert=True
+            downloads  = user_limit.get("downloads", 0) if user_limit and user_limit.get("date", datetime.min) >= today else 0
+            if downloads >= 10:
+                await processing_msg.edit_text(
+                    "🚫 **Daily limit reached!**\n\n"
+                    "Free users can download up to **10 files per day**.\n"
+                    "Upgrade to premium for unlimited downloads!",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("💎 Upgrade Now", callback_data="menu_plans")
+                    ]]),
                 )
-            else:
-                daily_limit.update_one(
-                    {"user_id": user_id},
-                    {
-                        "$set": {"downloads": 1, "date": today},
-                        "$inc": {"total_downloads": 1}
-                    },
-                    upsert=True
-                )
-            remaining = 10 - (user_limit.get("downloads", 0) + 1 if user_limit else 1)
-        else:
+                return
             daily_limit.update_one(
                 {"user_id": user_id},
-                {"$inc": {"total_downloads": 1}},
-                upsert=True
+                {"$set": {"downloads": downloads + 1, "date": today}, "$inc": {"total_downloads": 1}},
+                upsert=True,
             )
-            remaining = None  # No limit for premium users
+            remaining = 10 - (downloads + 1)
+        else:
+            daily_limit.update_one({"user_id": user_id}, {"$inc": {"total_downloads": 1}}, upsert=True)
+            remaining = None
 
-        # Fetch and copy the message
+        # Download & send
         try:
-            source_message = await client.get_messages(channel_username, message_id)
-            if not source_message:
-                await client.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=processing_msg.id,
-                    text="Message not found or deleted!",
-                    parse_mode=ParseMode.MARKDOWN
+            source_msg = await client.get_messages(channel_username, message_id)
+            if not source_msg:
+                await processing_msg.edit_text(
+                    "❌ **Message not found.** It may have been deleted.",
+                    parse_mode=ParseMode.MARKDOWN,
                 )
-                LOGGER.error(f"Message {message_id} not found in {channel_username}")
                 return
 
-            # Check if the message contains a video
-            if source_message.video:
-                user_data = user_activity_collection.find_one({"user_id": user_id})
+            if source_msg.video:
+                user_data         = user_activity_collection.find_one({"user_id": user_id})
                 thumbnail_file_id = user_data.get("thumbnail_file_id") if user_data else None
                 try:
                     if thumbnail_file_id:
-                        # Validate thumbnail by sending it as a photo
                         try:
-                            test_photo = await client.send_photo(
-                                chat_id=user_id,
-                                photo=thumbnail_file_id,
-                                caption="Validating thumbnail...",
-                                parse_mode=ParseMode.MARKDOWN
-                            )
-                            await test_photo.delete()  # Clean up test message
-                        except Exception as e:
+                            tp = await client.send_photo(chat_id=user_id, photo=thumbnail_file_id, caption="…")
+                            await tp.delete()
+                        except Exception:
                             thumbnail_file_id = None
-                            LOGGER.warning(f"Invalid thumbnail file_id for user {user_id}: {e}")
-                            await message.reply_text(
-                                "**Invalid or expired thumbnail! Please set a new one with /setthumb.**",
-                                parse_mode=ParseMode.MARKDOWN
-                            )
 
                     await client.send_video(
                         chat_id=chat_id,
-                        video=source_message.video.file_id,
-                        caption=source_message.caption or "",
-                        parse_mode=ParseMode.MARKDOWN if source_message.caption else None,
-                        thumb=thumbnail_file_id if thumbnail_file_id else None
+                        video=source_msg.video.file_id,
+                        caption=source_msg.caption or "",
+                        parse_mode=ParseMode.MARKDOWN if source_msg.caption else None,
+                        thumb=thumbnail_file_id,
                     )
-                    LOGGER.info(f"Sent video with {'custom' if thumbnail_file_id else 'default'} thumbnail for user {user_id}")
                 except FileReferenceExpired:
-                    LOGGER.error(f"Thumbnail file reference expired for user {user_id}")
-                    await client.send_video(
-                        chat_id=chat_id,
-                        video=source_message.video.file_id,
-                        caption=source_message.caption or "",
-                        parse_mode=ParseMode.MARKDOWN if source_message.caption else None
-                    )
-                    await message.reply_text(
-                        "Custom thumbnail expired! Please set a new one with /setthumb.",
-                        parse_mode=ParseMode.MARKDOWN
-                    )
-                    LOGGER.info(f"Sent video with default thumbnail for user {user_id} due to expired thumbnail")
+                    await client.send_video(chat_id=chat_id, video=source_msg.video.file_id,
+                                            caption=source_msg.caption or "")
                 except Exception as e:
-                    LOGGER.error(f"Failed to send video with thumbnail for user {user_id}: {e}")
-                    await client.send_video(
-                        chat_id=chat_id,
-                        video=source_message.video.file_id,
-                        caption=source_message.caption or "",
-                        parse_mode=ParseMode.MARKDOWN if source_message.caption else None
-                    )
-                    await message.reply_text(
-                        "Error applying thumbnail! Using default thumbnail.",
-                        parse_mode=ParseMode.MARKDOWN
-                    )
-                    LOGGER.info(f"Sent video with default thumbnail for user {user_id} due to error")
+                    LOGGER.error(f"Video send error: {e}")
+                    await client.send_video(chat_id=chat_id, video=source_msg.video.file_id,
+                                            caption=source_msg.caption or "")
             else:
-                # Copy non-video messages directly
-                await client.copy_message(
-                    chat_id=chat_id,
-                    from_chat_id=channel_username,
-                    message_id=message_id
+                await client.copy_message(chat_id=chat_id, from_chat_id=channel_username, message_id=message_id)
+
+            # Success message
+            if is_premium:
+                done_text = (
+                    "✅ **Done!** Your content has been delivered.\n\n"
+                    "As a premium member you have **unlimited downloads**. Enjoy! 🚀"
+                )
+            else:
+                done_text = (
+                    f"✅ **Done!** Your content has been delivered.\n\n"
+                    f"📊 You have **{remaining}/10** free downloads left today.\n"
+                    f"💎 Upgrade to premium for unlimited access!"
                 )
 
-            reminder_text = (
-                f"**Congratulations 🎉 You have received the content ✅**\n\n"
-                f"**Download from private channel/group in premium plan, check /plans 😍**\n\n"
-                f"**Daily limit left: {remaining}/10**"
-            ) if not is_premium else (
-                "**Congratulations 🎉 You have received the content ✅**\n\n"
-                "**As a premium user, enjoy unlimited downloads!**"
+            await processing_msg.edit_text(
+                done_text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("💎 Get Premium", callback_data="menu_plans")
+                ]]) if not is_premium else None,
             )
-            await client.edit_message_text(
-                chat_id=chat_id,
-                message_id=processing_msg.id,
-                text=reminder_text,
-                parse_mode=ParseMode.MARKDOWN
-            )
-            LOGGER.info(f"Successfully copied message {message_id} from {channel_username} for user {user_id}")
 
-        except ChannelInvalid:
-            await client.edit_message_text(
-                chat_id=chat_id,
-                message_id=processing_msg.id,
-                text="Invalid channel or group! Ensure it's public and accessible.",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            LOGGER.error(f"Invalid channel: {channel_username}")
-        except ChannelPrivate:
-            if not is_premium:
-                await client.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=processing_msg.id,
-                    text="This channel is private! Upgrade to premium and use /login: /plans",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-                LOGGER.error(f"Private channel {channel_username} attempted by free user {user_id}")
-        except PeerIdInvalid:
-            await client.edit_message_text(
-                chat_id=chat_id,
-                message_id=processing_msg.id,
-                text="Invalid chat ID! Please check the URL and try again.",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            LOGGER.error(f"Invalid chat ID: {channel_username}")
         except Exception as e:
-            await client.edit_message_text(
-                chat_id=chat_id,
-                message_id=processing_msg.id,
-                text=f"Error copying the message: {str(e)}",
-                parse_mode=ParseMode.MARKDOWN
+            await processing_msg.edit_text(
+                f"❌ **Download failed.**\n\n`{str(e)}`\n\nPlease try again.",
+                parse_mode=ParseMode.MARKDOWN,
             )
-            LOGGER.error(f"Failed to copy message {message_id} from {channel_username}: {e}")
+            LOGGER.error(f"dl_command error for user {user_id}: {e}")
 
     app.add_handler(
         MessageHandler(
             dl_command,
-            filters=filters.command("dl", prefixes=COMMAND_PREFIX) & (filters.private | filters.group)
+            filters=filters.command("dl", prefixes=COMMAND_PREFIX) & (filters.private | filters.group),
         ),
-        group=1
+        group=1,
     )
